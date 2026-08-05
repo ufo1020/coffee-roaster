@@ -1,0 +1,32 @@
+# --- secrets (never commit) ---
+secrets.h
+secrets.yaml
+.env
+.env.*
+!.env.example
+*.local
+# keys / certs
+*.pem
+*.key
+*.p12
+*.crt
+!secrets.h.example
+!secrets.yaml.example
+
+# --- python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# --- ESP32 / PlatformIO ---
+esp32/.pio/
+esp32/.vscode/
+.pio/
+
+# --- ESPHome build artifacts ---
+.esphome/
+
+# --- misc ---
+*.log
+.DS_Store

@@ -1,0 +1,74 @@
+@startuml roaster-architecture
+title Coffee Roaster — roaster-ui-driven, ESP32-controlled (top-level architecture)
+
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam defaultTextAlignment center
+skinparam ArrowColor #444
+skinparam nodeBackgroundColor #F7F7F7
+skinparam rectangleBackgroundColor #FFFFFF
+
+actor "Roaster Operator" as user
+
+node "Client (phone / laptop / tablet)\non home LAN" as client {
+  component "Web browser" as browser
+}
+
+node "atst-srv  (Docker host)" as atst {
+  component "roaster-ui (FastAPI/uvicorn :8077)\nprofiles · host PID · fan curves\nfirst-crack / dev tracking · logging" as ui
+  database "Roast profiles & logs\n(.alog on volume)" as logs
+  component "MQTT broker (mosquitto)\nbase: coffee-roaster-esp32/" as mqtt
+  component "Artisan (optional logger)\ncontainerised web desktop" as artisan
+}
+
+node "ESP32 controller\n(coffee-roaster-esp32)" as esp {
+  component "Firmware\nroast state machine\n(MANUAL passthrough / local PID)" as fw
+  component "MQTT client\nstatus + setpoints" as mc
+  component "ArduinoOTA (:3232)\nwireless firmware update" as ota
+  component "Safety watchdog\n(fail-safe: heater OFF)" as safety
+}
+
+node "Dev machine\n(PlatformIO)" as dev
+
+node "Roaster hardware\n(driven by ESP32 — build later)" as hw {
+  component "Thermocouple\nMAX6675  BT" as tc
+  component "Heater SSR\n(zero-cross PWM)" as heat
+  component "Fan (brushless + ESC)\n+ drum" as motors
+}
+
+' --- user access path (browser straight to roaster-ui) ---
+user --> browser
+browser --> ui : "HTTP + WebSocket (LAN)\nhttp://atst:8077"
+ui --> logs : "save / load roasts"
+
+' --- control + telemetry path (roaster-ui <-> ESP32, via broker) ---
+ui --> mqtt : "publish set/heater, set/fan,\nset/mode, set/pid_target, heartbeat"
+mqtt --> mc : "setpoints + heartbeat"
+mc --> mqtt : "publish status (bt/et/ror/\nheater/fan/state ~2 Hz),\navailable (LWT), version"
+mqtt --> ui : "status / available / version"
+mc <--> fw
+fw --> safety : "watchdog: cut heat on\ncomms loss / over-temp / runaway"
+
+' --- optional Artisan logger (reads the same telemetry) ---
+mqtt ..> artisan : "optional: BT for logging/analysis\n(Artisan derives its own dBT)"
+
+' --- wireless firmware updates ---
+dev ..> ota : "espota over WiFi\n(pio run -e ota)\nheater forced OFF during flash"
+ota ..> fw
+
+' --- physical control of the roaster ---
+fw --> heat : "PWM"
+fw --> motors : "servo PWM (ESC)"
+tc --> fw : "SPI temp"
+heat --> hw
+motors --> hw
+
+legend right
+  Control loop runs on roaster-ui (host PID); the ESP32 is a
+  dumb-but-safe actuator in MANUAL passthrough. The SAFETY
+  watchdog runs ON the ESP32, so a network/server outage
+  fails safe — heater cuts out. roaster-ui is the "brain",
+  the ESP32 is the reliable "hands". Artisan is optional logging only.
+endlegend
+
+@enduml

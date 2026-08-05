@@ -1,0 +1,28 @@
+# ESPHome config that first brought the board online (WiFi + MQTT).
+# Kept for reference. The control firmware in ../src supersedes this for
+# roasting (ESPHome can't act as a Modbus-TCP *server*, which Artisan needs).
+#
+# Secrets are pulled from secrets.yaml (gitignored). See secrets.yaml.example.
+
+esphome:
+  name: coffee-roaster-esp32
+
+esp32:
+  board: esp32dev
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+# ESPHome native API (unauthenticated on LAN; add encryption: to secure)
+api:
+
+ota:
+  - platform: esphome
+
+logger:
+
+mqtt:
+  broker: !secret mqtt_broker
+  username: !secret mqtt_username
+  password: !secret mqtt_password
