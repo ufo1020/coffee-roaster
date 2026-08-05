@@ -15,8 +15,10 @@ on the ESP**, so a network/server outage fails safe — heater cuts out.
 > logger/analysis client (feed it BT and let it derive its own ΔBT), but it no
 > longer drives the roast, and the old Modbus-TCP path has been removed.
 
-See [`docs/arch.puml`](docs/arch.puml) for the top-level architecture
-(PlantUML source; render with `plantuml docs/arch.puml`).
+![Architecture](docs/arch.svg)
+
+Top-level architecture. Source: [`docs/arch.puml`](docs/arch.puml) — regenerate
+the SVG with `plantuml docs/arch.puml`.
 
 ```
 ┌─ client browser (LAN) ─┐        ┌─ atst-srv (Docker host) ──┐   MQTT   ┌─ ESP32 (coffee-roaster-esp32) ─┐
@@ -29,7 +31,7 @@ See [`docs/arch.puml`](docs/arch.puml) for the top-level architecture
 
 | Path | What |
 |------|------|
-| `docs/arch.puml` | Architecture diagram (PlantUML source). |
+| `docs/arch.puml` / `docs/arch.svg` | Architecture diagram (PlantUML source + rendered SVG). |
 | `docs/mqtt-topics.md` | The MQTT topic + payload contract between roaster-ui and the ESP32. |
 | `esp32/` | Firmware for the controller (PlatformIO / Arduino). All HW pins are **placeholders** in `esp32/include/config.h`. |
 | `esp32/reference/roaster.yaml` | Original ESPHome config that first got the board on WiFi/MQTT. Kept for reference; the control firmware supersedes it. |
