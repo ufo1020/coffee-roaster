@@ -124,7 +124,7 @@
 //  instantly on subscribe — that's the "query the firmware version" mechanism.
 // ---------------------------------------------------------------------------
 #ifndef FW_VERSION                         // overridable via -DFW_VERSION in platformio.ini
-#define FW_VERSION        "2026.08.05"
+#define FW_VERSION        "2026.08.12"
 #endif
 #define FW_BUILD          (__DATE__ " " __TIME__)
 
