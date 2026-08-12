@@ -133,6 +133,10 @@
 // ---------------------------------------------------------------------------
 #define CONTROL_LOOP_HZ        10     // PID / output update rate
 #define TELEMETRY_HZ           2      // how often temps refresh the registers
+// BT filter sampling: the MAX6675 needs ~170-220 ms/conversion, so sampling faster
+// than this just re-reads the same value. 250 ms = ~4 Hz feeds the trimmed-mean ring
+// (thermocouples.cpp) with real samples while telemetry still publishes at 2 Hz.
+#define TC_SAMPLE_MS           250
 // RoR window: a single sample-to-sample delta divided by ~0.5 s is dominated by
 // MAX6675 jitter (measured raw RoR swung -372..+1600 C/min, 21% sign-flips on a
 // real roast — 2026-07-26). Compute the slope over a sliding time window instead:

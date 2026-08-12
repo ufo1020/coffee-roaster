@@ -23,6 +23,7 @@
 
 static uint32_t lastControlUs = 0;
 static uint32_t lastTelemetryUs = 0;
+static uint32_t lastSampleUs = 0;
 
 // WiFi event handler: the AP can deauth us or the link can glitch at any time.
 // Without this the board would associate once at boot and then sit offline
@@ -110,6 +111,13 @@ void loop() {
   }
 
   const uint32_t now = micros();
+
+  // BT sampling: feed the trimmed-mean ring at ~4 Hz (>= the MAX6675 conversion
+  // time). Decoupled from telemetry so the filter has enough real samples to trim.
+  if (now - lastSampleUs >= TC_SAMPLE_MS * 1000UL) {
+    lastSampleUs = now;
+    thermocouplesSample();
+  }
 
   // Telemetry: refresh temps into the input registers (published over MQTT).
   if (now - lastTelemetryUs >= 1000000UL / TELEMETRY_HZ) {
