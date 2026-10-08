@@ -3,10 +3,10 @@
 #include "config.h"
 #include "thermocouples.h"
 
-// Software-CS MAX6675 on the shared hardware SPI bus. Only BT is wired; ET is
+// Software-CS MAX6675 on the shared hardware SPI bus. Only the air probe is wired; ET is
 // disabled (PIN_TC_CS_ET < 0) and always reads NAN. Constructed only if the
 // pins are real; with placeholder pins (-1) reads return NAN.
-static MAX6675* tcBT = nullptr;
+static MAX6675* tcAir = nullptr;
 
 void thermocouplesBegin() {
   if (PIN_TC_SCK < 0 || PIN_TC_MISO < 0) {
@@ -14,12 +14,12 @@ void thermocouplesBegin() {
     return;
   }
   // MAX6675 has no begin(); the constructor sets up the pins.
-  if (PIN_TC_CS_BT >= 0)
-    tcBT = new MAX6675(PIN_TC_SCK, PIN_TC_CS_BT, PIN_TC_MISO);
+  if (PIN_TC_CS_AIR >= 0)
+    tcAir = new MAX6675(PIN_TC_SCK, PIN_TC_CS_AIR, PIN_TC_MISO);
   delay(250); // let the chip settle after power-up
 }
 
-// Filter the BT read: the MAX6675 on this rig scatters ±5-10 C sample-to-sample
+// Filter the air-temp read: the MAX6675 on this rig scatters ±5-10 C sample-to-sample
 // (EMI pickup, often in short bursts), which corrupts RoR and the runaway guard (a
 // real slow rise reads as flat -> false FAULT, seen 2026-07-24). We use a TRIMMED
 // MEAN (same pattern as the BBB temp sensor fix): drop the extremes, average the
@@ -32,7 +32,7 @@ void thermocouplesBegin() {
 // and thermocouplesRead() — called at the 2 Hz telemetry rate — returns the trimmed
 // mean of that ring. Two stages:
 //   0) outlier gate — reject any raw sample that jumps > TC_MAX_STEP_C from the last
-//      accepted value before it ever enters the ring. Real BT can't move that fast in
+//      accepted value before it ever enters the ring. The real reading can't move that fast in
 //      a 250 ms sample, but EMI can. Zero lag; capped at TC_MAX_REJECT consecutive so
 //      a genuine step (bean charge) or a settled new level is eventually accepted.
 //   1) trimmed mean — sort the window, drop TC_TRIM lowest + TC_TRIM highest, average
@@ -44,7 +44,7 @@ void thermocouplesBegin() {
 #define TC_SAMPLE_MS   250         // ring sampling period (>= chip conversion time)
 #endif
 #ifndef TC_WINDOW
-#define TC_WINDOW      8           // ring size: 8 @ 4 Hz = 2 s of BT history
+#define TC_WINDOW      8           // ring size: 8 @ 4 Hz = 2 s of air history
 #endif
 #ifndef TC_TRIM
 #define TC_TRIM        2           // drop this many lowest AND highest before averaging
@@ -69,8 +69,8 @@ static float gLastRaw = NAN;       // last UNFILTERED chip read (pre-gate); debu
 // Sample the chip into the ring. Call at ~TC_SAMPLE_MS from loop(); reading faster
 // than the conversion time gains nothing (same value returned).
 void thermocouplesSample() {
-  if (!tcBT) return;
-  const float raw = tcBT->readCelsius();
+  if (!tcAir) return;
+  const float raw = tcAir->readCelsius();
   gLastRaw = raw;                  // stash the true pre-gate/pre-trim read (debug)
 
   if (isnan(raw)) {                // open thermocouple: flush and mark dead
@@ -99,7 +99,7 @@ void thermocouplesSample() {
 Temps thermocouplesRead() {
   Temps t{ NAN, NAN };             // ET is not wired → NAN
   // dead probe: surface NaN immediately so safety.cpp's debounce fires (unchanged).
-  if (!tcBT || gDeadRaw || gCount == 0) { t.bt = NAN; return t; }
+  if (!tcAir || gDeadRaw || gCount == 0) { t.air = NAN; return t; }
 
   // 1) trimmed mean: copy the ring, insertion-sort, drop TC_TRIM from each end.
   float s[TC_WINDOW];
@@ -115,10 +115,10 @@ Temps thermocouplesRead() {
   int trim = (n - 2 * TC_TRIM >= 1) ? TC_TRIM : 0;
   float sum = 0.0f; int cnt = 0;
   for (int i = trim; i < n - trim; i++) { sum += s[i]; cnt++; }
-  t.bt = sum / cnt;
+  t.air = sum / cnt;
   return t;
 }
 
 // Last UNFILTERED MAX6675 read (pre outlier-gate, pre trimmed-mean). Debug aid to
-// compare raw vs filtered BT and see what the filter is hiding. NAN if none/dead.
-float thermocouplesRawBt() { return gLastRaw; }
+// compare raw vs filtered air temp and see what the filter is hiding. NAN if none/dead.
+float thermocouplesRawAir() { return gLastRaw; }

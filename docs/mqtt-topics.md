@@ -26,12 +26,13 @@ and `esp32/src/mqtt_comm.cpp` (payload shape).
 
 | Key | Meaning | Units |
 |-----|---------|-------|
-| `bt` | Bean temp | °C |
+| `air` | Air temp: the single probe, ~1 cm above the heater disc in the inlet jet. Reads mostly hot air, not beans. **Was `bt` before FW 2026.10.08.** | °C |
+| `air_raw` | Unfiltered `air` chip read (only with `DEBUG_RAW_AIR`; was `bt_raw`) | °C |
 | `et` | Environment temp (only if `HAS_ET_PROBE`) | °C |
-| `ror` | Bean rate-of-rise (firmware-computed, 30 s window) | °C/min |
+| `ror` | Rate of rise of `air` (firmware-computed, 30 s window) | °C/min |
 | `heater` | Heater actual output | % |
 | `fan` | Fan actual output | % |
-| `state` | Roaster state enum: 0=idle 1=roast 2=cool 3=fault | enum |
+| `state` | Roaster state enum: 0=idle 1=roast 2=cool 3=fault (any safety action, incl. the over-temp heat hold below) | enum |
 
 ## Firmware SUBSCRIBES
 
@@ -50,6 +51,18 @@ watchdog. If the controller goes silent for `SAFETY_COMMS_TIMEOUT_MS`, the ESP
 **cuts the heater** (fail-safe). roaster-ui publishes `heartbeat` continuously —
 keep it running. This watchdog is independent of any host-side logic.
 
+**What each safety guard does to the outputs** (all report `state` 3):
+
+| Guard | Trip | Outputs | Clears |
+|-------|------|---------|--------|
+| comms watchdog | no `set/*`/`heartbeat` for `SAFETY_COMMS_TIMEOUT_MS` | heater 0, fan 100 % | next heartbeat |
+| dead probe | `air` NaN for `SAFETY_BADPROBE_MAX` reads | heater 0, fan 100 % | good read |
+| over-temp | `air` ≥ `SAFETY_MAX_AIR_C` (240 °C) | heater 0, **fan as commanded** | `air` < `SAFETY_AIR_RESUME_C` (230 °C) |
+| thermal runaway | heater ≥ 60 % but `air` rises < 2 °C in 60 s (only while `air` < 150 °C) | heater 0, fan 100 % | next window |
+
+Before FW 2026.10.08 the over-temp limit was a non-latching 230 °C that also forced the fan
+to 100 %. It tripped repeatedly at first crack on normal roasts.
+
 ## Control model
 
 roaster-ui runs the **PID on the host** and pushes `set/heater` + `set/fan`, so
@@ -60,7 +73,7 @@ timeout) always run and can override any commanded output.
 
 ## Attaching Artisan (optional)
 
-Point Artisan at the broker as an MQTT source and read `<base>/status` `bt` for
+Point Artisan at the broker as an MQTT source and read `<base>/status` `air` for
 logging. Let Artisan compute its **own** ΔBT (Config → Curves → Delta) for
 analysis — don't also feed it the firmware `ror`, or you'll double-smooth. Artisan
 should **not** publish `set/*` in the current setup (roaster-ui owns control).
