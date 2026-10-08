@@ -46,6 +46,19 @@ T_HEARTBEAT = f"{BASE}/heartbeat"
 
 # must match firmware / app interlock: heater is forced 0 below this fan %
 HEATER_MIN_FAN_PCT = 20
+# Mirrors the firmware's HEATER_FAN_LEAD_MS. The interlock above is satisfied the
+# instant a fan PERCENTAGE is commanded, but a real ESC-driven blower takes a second
+# or two to move air, so the firmware holds the heater off until the fan has been up
+# this long. The sim has to mirror it, or it is more permissive than the hardware and
+# will happily "prove" a master-side fix while the real roaster would still energise
+# the element into a stopped blower.
+HEATER_FAN_LEAD_S = 5.0   # keep in step with the firmware's HEATER_FAN_LEAD_MS
+# Mirrors the firmware's fan soft start. A brushless motor stepped straight from a
+# dead stop to a high demand can fail to sync and just sit there, so the ESC is
+# given a gentle break-away and a ramp. Mirrored here for the same reason as the
+# lead above: a sim that accepts instant fan steps is not the machine.
+FAN_START_PCT      = 25
+FAN_SLEW_PCT_PER_S = 60
 
 # --- lumped thermal model (deg C, seconds) --------------------------------
 #   dBT = K_H*(heater/100)*eff - (K_LOSS + K_FAN*fan/100)*(BT - ambient)
@@ -53,7 +66,7 @@ HEATER_MIN_FAN_PCT = 20
 # cutoff) with a punchy-but-believable ramp: ~40 C/min early, tapering as BT
 # rises. Crucially K_H now BEATS losses well past roast temp, so BT actually
 # REACHES target (the old K_H=0.35 stalled ~195 C — that was the "too slow").
-AMBIENT = 22.0
+AMBIENT = 22.0     # default room temp; override with --ambient (see --start-temp)
 K_H     = 1.2      # heater authority (deg/s at 100%)
 K_LOSS  = 0.0030   # passive loss to ambient
 K_FAN   = 0.0060   # extra loss per unit fan
@@ -64,7 +77,14 @@ class FakeESP:
     def __init__(self, a):
         self.heater = 0          # last commanded (pre-interlock)
         self.fan = 0
+        self._fan_up_since = None   # monotonic when fan first reached the interlock
+        self._fan_applied = 0       # post-soft-start fan, i.e. what the ESC is given
+        self._fan_last_t = None
         self.bt = a.start_temp
+        # Room temp the model decays toward, and the floor BT can't fall below.
+        # Defaults to AMBIENT, but a start temp below that (a cold morning, a garage)
+        # would otherwise be yanked straight back up to 22 — so follow it down.
+        self.ambient = a.ambient if a.ambient is not None else min(AMBIENT, a.start_temp)
         self.state = 3 if a.fault else 0   # 0 IDLE 1 ROASTING 2 COOLING 3 FAULT
         self.no_probe = a.no_probe
         self.sim = a.sim
@@ -107,8 +127,8 @@ class FakeESP:
 
     def step(self, dt):
         self.t += dt
-        # firmware interlock: no airflow => no heat
-        heat_eff = 0 if self.fan < HEATER_MIN_FAN_PCT else self.heater
+        # firmware interlock + spin-up lead: no airflow => no heat
+        heat_eff = self._applied_heat()
 
         # disturb mode: make BT wander off the commanded curve so the PID has to
         # correct. Two deterministic (repeatable) disturbances:
@@ -123,12 +143,44 @@ class FakeESP:
                 kick = -0.5
         self.eff = eff
 
-        loss = (K_LOSS + K_FAN * self.fan / 100.0) * (self.bt - AMBIENT)
+        loss = (K_LOSS + K_FAN * self._applied_fan() / 100.0) * (self.bt - self.ambient)
         self.bt += dt * (K_H * heat_eff / 100.0 * eff - loss + kick)
-        if self.bt < AMBIENT:
-            self.bt = AMBIENT
+        if self.bt < self.ambient:
+            self.bt = self.ambient
         if self.state != 3:  # don't leave FAULT on its own
             self.state = 1 if heat_eff > 0 else (2 if self.bt > 40 else 0)
+
+    def _applied_fan(self):
+        """Fan % the ESC is actually commanded: soft-started off a dead stop, then
+        ramped. Mirrors the soft-start block in roasterIoApply()."""
+        now = time.monotonic()
+        dt = 0.0 if self._fan_last_t is None else now - self._fan_last_t
+        self._fan_last_t = now
+        want = self.fan
+        if want == 0:
+            self._fan_applied = 0
+        elif self._fan_applied == 0:
+            self._fan_applied = min(want, FAN_START_PCT)
+        elif want > self._fan_applied:
+            step = FAN_SLEW_PCT_PER_S * dt
+            self._fan_applied = want if (want - self._fan_applied) <= step \
+                                else int(self._fan_applied + step)
+        else:
+            self._fan_applied = want
+        return int(self._fan_applied)
+
+    def _applied_heat(self):
+        """What the SSR actually receives: the airflow interlock, then the spin-up
+        lead. Mirrors roasterIoApply() in the firmware."""
+        if self._fan_applied < HEATER_MIN_FAN_PCT:
+            self._fan_up_since = None
+            return 0
+        now = time.monotonic()
+        if self._fan_up_since is None:
+            self._fan_up_since = now
+        if now - self._fan_up_since < HEATER_FAN_LEAD_S:
+            return 0
+        return self.heater
 
     def bt_reading(self):
         """Published BT: true model temp + a little sensor noise (deterministic)."""
@@ -146,19 +198,19 @@ class FakeESP:
                 now = time.monotonic()
                 dt, last = now - last, now
                 self.step(dt)
-                heat_eff = 0 if self.fan < HEATER_MIN_FAN_PCT else self.heater
+                heat_eff = self._applied_heat()
                 status = {
                     "bt": self.bt_reading(),
                     "et": None,
                     "ror": round(self._ror(now), 1),
                     "heater": heat_eff,     # actual, post-interlock (what the SSR sees)
-                    "fan": self.fan,
+                    "fan": self._applied_fan(),   # what the ESC got, post soft start
                     "state": self.state,
                 }
                 self.m.publish(T_STATUS, json.dumps(status))
                 dist = f" eff={self.eff:.2f}" if self.sim == "disturb" else ""
                 print(f"\rBT={status['bt']}  RoR={status['ror']:+.1f}  "
-                      f"heat={heat_eff:3d}%  fan={self.fan:3d}%  "
+                      f"heat={heat_eff:3d}%  fan={self._applied_fan():3d}%  "
                       f"state={self.state}  hb={self.hb}{dist}   ", end="", flush=True)
                 time.sleep(1.0)
         except KeyboardInterrupt:
@@ -178,12 +230,18 @@ def main():
     ap.add_argument("--password", default=os.getenv("MQTT_PASS", ""))   # set via MQTT_PASS or --password (no baked-in secret)
     ap.add_argument("--sim", choices=["realistic", "disturb"], default="realistic",
                     help="realistic: fast ramp, PID tracks; disturb: drift off-curve to stress PID")
-    ap.add_argument("--start-temp", type=float, default=AMBIENT, dest="start_temp")
+    ap.add_argument("--start-temp", type=float, default=AMBIENT, dest="start_temp",
+                    help="bean temp at startup (default: ambient)")
+    ap.add_argument("--ambient", type=float, default=None,
+                    help="room temp the model decays toward / BT floor "
+                         f"(default: min({AMBIENT:.0f}, --start-temp))")
     ap.add_argument("--fault", action="store_true", help="report FAULT (test banner/ready block)")
     ap.add_argument("--no-probe", action="store_true", dest="no_probe",
                     help="publish bt=null (dead-probe look)")
     a = ap.parse_args()
-    print(f"[fake-esp] {a.host}:{a.port} user={a.user}  (Ctrl-C to stop)")
+    amb = a.ambient if a.ambient is not None else min(AMBIENT, a.start_temp)
+    print(f"[fake-esp] {a.host}:{a.port} user={a.user}  "
+          f"start_bt={a.start_temp:.1f}C ambient={amb:.1f}C  (Ctrl-C to stop)")
     FakeESP(a).run()
 
 

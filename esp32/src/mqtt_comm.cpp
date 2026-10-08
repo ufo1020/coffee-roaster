@@ -98,6 +98,9 @@ static void publishStatus() {
   doc["heater"] = gInput[IREG_HEATER_ACT];
   doc["fan"]    = gInput[IREG_FAN_ACT];
   doc["state"]  = gInput[IREG_STATE];
+#if DEBUG_RAW_BT
+  doc["bt_raw"] = gInput[IREG_BT_RAW] / 10.0f;   // unfiltered chip read (debug)
+#endif
   char out[192];
   size_t n = serializeJson(doc, out, sizeof(out));
   mq.publish(MQTT_TOPIC_STATUS, (const uint8_t*)out, n, false);

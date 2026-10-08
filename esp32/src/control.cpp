@@ -3,6 +3,7 @@
 #include "config.h"
 #include "control.h"
 #include "comm.h"
+#include "thermocouples.h"
 
 static Temps        gTemps{ NAN, NAN };
 static RoasterState gState = STATE_IDLE;
@@ -59,6 +60,13 @@ void controlUpdateTemps(const Temps& t) {
   commSetInput(IREG_ET,     isnan(t.et)  ? 0 : (int16_t)lroundf(t.et  * 10));
   commSetInput(IREG_BT_ROR, isnan(gRoR)  ? 0 : (int16_t)lroundf(gRoR * 10));
   commSetInput(IREG_STATE,  (uint16_t)gState);
+#if DEBUG_RAW_BT
+  // Raw (pre-gate, pre-trim) chip read alongside the filtered BT, so raw vs
+  // filtered can be logged side by side to see if the filter manufactures the
+  // BT limit cycle (it can't — but prove it, don't assume). See DEBUG_RAW_BT.
+  const float rawBt = thermocouplesRawBt();
+  commSetInput(IREG_BT_RAW, isnan(rawBt) ? 0 : (int16_t)lroundf(rawBt * 10));
+#endif
 }
 
 Temps controlCurrentTemps() { return gTemps; }

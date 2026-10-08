@@ -69,6 +69,25 @@
 // commands.
 #define HEATER_MIN_FAN_PCT  20
 
+// FAN SPIN-UP LEAD. The interlock above is numeric and instant, but the blower is
+// a brushless motor on an RC ESC: after the pulse width changes it needs ~1-2 s to
+// actually move air, while the zero-cross SSR conducts on the next mains half-cycle.
+// So a fan+heater pair commanded together satisfies the interlock on paper while
+// energising the element into a still-stopped blower — heat with no airflow, the
+// exact failure the interlock exists to prevent (seen on real hardware 2026-09-18:
+// cold start, heater 80 / fan 80, element on before the fan moved).
+// Hold the heater fully OFF until the fan has been AT or ABOVE the threshold for
+// this long. Enforced in roasterIoApply() alongside the interlock, so it holds
+// regardless of control mode, master commands, or how the heat was requested.
+// The master enforces the same lead (FAN_LEAD_S); this is the backstop for when it
+// doesn't — old master, crash mid-command, or anything else publishing set/heater.
+// 5000 not 3000: measured on real hardware 2026-09-18 (operator watched live power
+// draw) the element was drawing for AT LEAST 2 s before the blower moved at all, so
+// 3 s left ~1 s of margin. Costs a few seconds at the start of a roast, and only
+// from a standstill. Keep this >= the master's FAN_LEAD_S so the backstop is never
+// the shorter of the two.
+#define HEATER_FAN_LEAD_MS  5000
+
 #define FAN_ESC_HZ        50     // servo frame rate
 #define FAN_PULSE_MIN_US  1000   // 0 % / OFF (also the arming level) — motor stopped
 #define FAN_RUN_MIN_US    1140   // fan 1 %  = lowest steady speed (just above cogging)
@@ -80,6 +99,19 @@
 // auto-rescale — re-check curves after each bump via the export→review workflow.
 #define FAN_PULSE_MAX_US  1850   // fan 100 % = ESC TRUE max (1850..2000 all identical)
 #define FAN_ARM_MS        3000   // hold min throttle this long at boot to arm
+
+// FAN SOFT START. A brushless motor has to be synchronised by the ESC as it starts:
+// the ESC energises the windings blind, feels where the rotor actually is, and locks
+// on. Demanding a large step straight from a dead stop can defeat that — the rotor
+// cogs instead of syncing, the ESC gives up, and the motor sits still while happily
+// being told 80%. Whether it catches depends partly on where the rotor happened to
+// stop, which is why it is intermittent, and it is worst with a high-inertia load
+// like a blower wheel. So never step the fan up from rest: break away at
+// FAN_START_PCT, then ramp at FAN_SLEW_PCT_PER_S up to whatever was asked for.
+// Downward changes are applied immediately — slowing down never needs a soft start,
+// and airflow must always be free to drop on command.
+#define FAN_START_PCT       25   // first speed commanded when coming off a dead stop
+#define FAN_SLEW_PCT_PER_S  60   // then rise no faster than this (0->100 % in ~1.5 s)
 
 // ---------------------------------------------------------------------------
 //  Local UI / safety indicators (optional)
@@ -124,7 +156,7 @@
 //  instantly on subscribe — that's the "query the firmware version" mechanism.
 // ---------------------------------------------------------------------------
 #ifndef FW_VERSION                         // overridable via -DFW_VERSION in platformio.ini
-#define FW_VERSION        "2026.08.12"
+#define FW_VERSION        "2026.09.19"   // fan soft start, spin-up lead, boot fail-safe fix
 #endif
 #define FW_BUILD          (__DATE__ " " __TIME__)
 
@@ -186,7 +218,13 @@
 #define IREG_HEATER_ACT  3   // heater actual (%)
 #define IREG_STATE       4   // roaster state enum (see control.h)
 #define IREG_FAN_ACT     5   // fan actual    (%)
-#define IREG_COUNT       6
+#define IREG_BT_RAW      6   // UNFILTERED bean temp (C x10) — debug, see DEBUG_RAW_BT
+#define IREG_COUNT       7
+
+// DEBUG: publish the raw (pre-filter) BT as "bt_raw" in the status JSON so raw and
+// filtered can be logged side by side (diagnosing the BT limit cycle). Set to 0 to
+// drop the extra field once the diagnosis is done.
+#define DEBUG_RAW_BT     1
 
 // Set to 1 only when an ET thermocouple is physically wired. When 0, ET is
 // omitted from the status payload instead of publishing a fake 0 C.

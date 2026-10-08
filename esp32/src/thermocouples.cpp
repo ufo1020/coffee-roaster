@@ -64,12 +64,14 @@ static int   gHead    = 0;         // next write index (circular)
 static float gLast    = NAN;       // last accepted value (for the outlier gate)
 static int   gRejects = 0;         // consecutive outlier rejections
 static bool  gDeadRaw = false;     // most recent chip read was open-circuit (NaN)
+static float gLastRaw = NAN;       // last UNFILTERED chip read (pre-gate); debug only
 
 // Sample the chip into the ring. Call at ~TC_SAMPLE_MS from loop(); reading faster
 // than the conversion time gains nothing (same value returned).
 void thermocouplesSample() {
   if (!tcBT) return;
   const float raw = tcBT->readCelsius();
+  gLastRaw = raw;                  // stash the true pre-gate/pre-trim read (debug)
 
   if (isnan(raw)) {                // open thermocouple: flush and mark dead
     gDeadRaw = true;
@@ -116,3 +118,7 @@ Temps thermocouplesRead() {
   t.bt = sum / cnt;
   return t;
 }
+
+// Last UNFILTERED MAX6675 read (pre outlier-gate, pre trimmed-mean). Debug aid to
+// compare raw vs filtered BT and see what the filter is hiding. NAN if none/dead.
+float thermocouplesRawBt() { return gLastRaw; }

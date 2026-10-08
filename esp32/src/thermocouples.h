@@ -15,3 +15,5 @@ void  thermocouplesSample();
 // Return the current filtered BT (trimmed mean of the ring). NAN if the probe is
 // dead/unwired so the safety debounce still fires.
 Temps thermocouplesRead();
+// Last UNFILTERED chip read (pre-gate, pre-trim). Debug: compare raw vs filtered.
+float thermocouplesRawBt();

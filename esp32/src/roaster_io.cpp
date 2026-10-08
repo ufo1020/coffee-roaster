@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "config.h"
 #include "roaster_io.h"
+#include "comm.h"     // to report what actually reached the pins, not what was asked
 
 // Heater is driven by a zero-cross SSR (Delixi CDG1-1DA). The SSR switches at
 // mains zero-cross on its own, so we get clean proportional power with plain
@@ -46,8 +47,16 @@ static uint32_t fanPctToUs(uint8_t pct) {
 void roasterIoBegin() {
   if (PIN_HEATER_SSR >= 0) { pinMode(PIN_HEATER_SSR, OUTPUT); digitalWrite(PIN_HEATER_SSR, LOW); }
   if (PIN_FAN_PWM    >= 0) {
-    // Start the ESC signal and hold min throttle so the ESC arms before we ever
-    // command real speed. Blocks briefly in setup() — fine, nothing else runs yet.
+    // Define the signal line BEFORE the LEDC peripheral is attached. Until then the
+    // pin is an undriven input, and whatever the ESC samples on a floating line —
+    // or any duty the timer happens to come up with before the first fanWriteUs() —
+    // is a throttle command we never intended. A steady LOW is not a valid servo
+    // frame at all, so the ESC simply sees "no signal" and stays idle, which is the
+    // one state we can be sure is safe.
+    pinMode(PIN_FAN_PWM, OUTPUT);
+    digitalWrite(PIN_FAN_PWM, LOW);
+    // Now start the real signal and hold min throttle so the ESC arms before we
+    // ever command speed. Blocks briefly in setup() — fine, nothing else runs yet.
     ledcAttach(PIN_FAN_PWM, FAN_ESC_HZ, FAN_LEDC_BITS);
     fanWriteUs(FAN_PULSE_MIN_US);
     delay(FAN_ARM_MS);
@@ -57,15 +66,62 @@ void roasterIoBegin() {
   // TODO: attachInterrupt(PIN_ZERO_CROSS, ...) once wired.
 }
 
+// millis() at which the APPLIED fan first reached HEATER_MIN_FAN_PCT, or 0 while
+// it is below it. Drives the spin-up lead below. Static so it survives across
+// calls and can never be reset by anything upstream.
+static uint32_t gFanUpSinceMs = 0;
+
 void roasterIoApply(const ControlOutputs& o) {
   uint8_t heat = o.heaterPct > 100 ? 100 : o.heaterPct;
   uint8_t fan  = o.fanPct    > 100 ? 100 : o.fanPct;
+
+  // SOFT START (see FAN_START_PCT): never step the blower up from a dead stop, or
+  // the ESC can fail to sync and leave the motor stationary while we believe it is
+  // running. Break away gently, then ramp. Everything below — interlock, spin-up
+  // lead, telemetry — then works off the speed we are ACTUALLY commanding.
+  {
+    static uint8_t  gFanApplied = 0;
+    static uint32_t gFanLastMs  = 0;
+    const uint32_t now = millis();
+    const uint32_t dt  = gFanLastMs ? (uint32_t)(now - gFanLastMs) : 0;
+    gFanLastMs = now;
+
+    if (fan == 0) {
+      gFanApplied = 0;                       // stopped: forget the ramp
+    } else if (gFanApplied == 0) {
+      gFanApplied = fan < FAN_START_PCT ? fan : FAN_START_PCT;   // break away
+    } else if (fan > gFanApplied) {
+      const uint32_t step = (uint32_t)FAN_SLEW_PCT_PER_S * dt / 1000u;
+      gFanApplied = ((uint32_t)(fan - gFanApplied) <= step) ? fan
+                                                            : (uint8_t)(gFanApplied + step);
+    } else {
+      gFanApplied = fan;                     // slowing down is always immediate
+    }
+    fan = gFanApplied;
+  }
 
   // SAFETY INTERLOCK (air roaster): the heater may never run without airflow.
   // If the fan is below HEATER_MIN_FAN_PCT, force the heater fully OFF here —
   // the lowest possible level, so it holds no matter what the control layer or
   // master commanded. This is the hardware truth: heater alone => scorch/fire.
   if (fan < HEATER_MIN_FAN_PCT) heat = 0;
+
+  // SPIN-UP LEAD (see HEATER_FAN_LEAD_MS): the interlock is satisfied the instant
+  // a fan PERCENTAGE arrives, but air does not move for another second or two. Keep
+  // the heater off until the fan has genuinely been up that long, so the element can
+  // never energise into a blower that is still starting. Only waits when airflow was
+  // actually below the threshold — ramping 30 % -> 80 % never waits.
+  {
+    const uint32_t now = millis();
+    if (fan >= HEATER_MIN_FAN_PCT) {
+      // 0 is the "fan is down" sentinel, so skip it on the ~49-day wrap.
+      if (gFanUpSinceMs == 0) gFanUpSinceMs = (now == 0) ? 1 : now;
+      // unsigned subtraction, so this stays correct across millis() rollover
+      if ((uint32_t)(now - gFanUpSinceMs) < HEATER_FAN_LEAD_MS) heat = 0;
+    } else {
+      gFanUpSinceMs = 0;
+    }
+  }
 
   // --- heater ---  slow-PWM burst control (SSR is internally zero-cross).
   if (PIN_HEATER_SSR >= 0) {
@@ -77,4 +133,13 @@ void roasterIoApply(const ControlOutputs& o) {
   // --- fan ---  RC ESC servo pulse: map 0..100 % -> min..max pulse width.
   if (PIN_FAN_PWM >= 0)
     fanWriteUs(fanPctToUs(fan));
+
+  // Report what the PINS got, not what the control layer asked for. control.cpp
+  // fills these in before this function runs, from the pre-interlock intent — so a
+  // roast log could show "heater 80 / fan 80" through an interlock cut, a spin-up
+  // hold or a soft-start ramp, none of which happened at the hardware. Overwrite
+  // with the truth: this is the only place that knows it, and both the UI and the
+  // master's own airflow check read these values.
+  commSetInput(IREG_HEATER_ACT, heat);
+  commSetInput(IREG_FAN_ACT,    fan);
 }

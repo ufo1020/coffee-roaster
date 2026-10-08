@@ -94,6 +94,18 @@ void setup() {
   commBegin();             // MQTT: control setpoints + telemetry publish
   controlBegin();
 
+  // Re-stamp the comms watchdog LAST. safetyBegin() started it before
+  // connectWifi(), which blocks until the AP answers — routinely longer than
+  // SAFETY_COMMS_TIMEOUT_MS. So by the time loop() ran its first control tick the
+  // watchdog had already expired, with no master heartbeat yet possible, and the
+  // very first thing the firmware did on every boot was declare FAULT and go to
+  // controlFailSafe() — heater 0 (harmless, nothing was on) and FAN 100 %. That is
+  // the "fan spins up then straight back down a few seconds after power-on": the
+  // blast, then the master's first heartbeat clearing the fault a beat later.
+  // Costs nothing to fix and removes a hard 0->100 % slam of the blower from every
+  // single startup.
+  safetyNoteHeartbeat();
+
   Serial.println("ready");
 }
 
