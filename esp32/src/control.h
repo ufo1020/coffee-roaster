@@ -21,5 +21,9 @@ ControlOutputs controlStep();
 // Safe outputs used when the safety layer trips (heater off, fan on to cool).
 ControlOutputs controlFailSafe();
 
+// Over-temp heat hold: heater off, fan left as commanded in `out`. Reports FAULT so
+// the master shows that the ESP is holding heat.
+ControlOutputs controlHeatHold(ControlOutputs out);
+
 // Last temps seen by the control layer (for the safety check).
 Temps controlCurrentTemps();

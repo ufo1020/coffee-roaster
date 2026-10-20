@@ -1,0 +1,13 @@
+{
+  "worktree": {
+    "setup": "echo \"worktree ready: $(git branch --show-current)\""
+  },
+  "scripts": {
+    "fw-build": { "command": "cd esp32 && ~/pio-venv/bin/pio run -e usb" },
+    "fw-flash-ota": { "command": "cd esp32 && ~/pio-venv/bin/pio run -e ota -t upload" },
+    "fake-esp": {
+      "type": "service",
+      "command": "python3 tools/fake_esp.py --sim realistic"
+    }
+  }
+}

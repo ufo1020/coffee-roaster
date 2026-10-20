@@ -37,7 +37,7 @@ the SVG with `plantuml docs/arch.puml`.
 | `esp32/reference/roaster.yaml` | Original ESPHome config that first got the board on WiFi/MQTT. Kept for reference; the control firmware supersedes it. |
 | `tools/fake_esp.py` | A fake ESP that speaks the MQTT protocol, for driving roaster-ui without hardware. |
 
-> The roaster-ui app itself lives on the server under `~/docker/roaster-ui/`
+> The roaster-ui app itself lives on the server under `~/code/roaster-ui/`
 > (FastAPI + uvicorn on :8077, MQTT client, uPlot chart UI), not in this repo.
 
 ## Control / transport
@@ -54,7 +54,7 @@ the SVG with `plantuml docs/arch.puml`.
 
 - [x] ESP32 online on WiFi/MQTT
 - [x] MQTT control firmware (PID + roast state machine + safety watchdog)
-- [x] roaster-ui web app driving profiles / PID / logging (`~/docker/roaster-ui/`)
+- [x] roaster-ui web app driving profiles / PID / logging (`~/code/roaster-ui/`)
 - [x] Firmware version reporting (retained `<base>/version`, shown in roaster-ui)
 - [ ] Hardware build + wiring (**HW pins are placeholders** in `config.h`)
 

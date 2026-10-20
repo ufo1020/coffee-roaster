@@ -8,13 +8,16 @@
 // =============================================================================
 
 // ---------------------------------------------------------------------------
-//  Thermocouple — MAX6675 (K-type), Bean Temp only. Read-only SPI, no MOSI.
-//  Only BT is wired; ET CS stays -1 (disabled) → ET reads NAN.
+//  Thermocouple — MAX6675 (K-type), one probe. Read-only SPI, no MOSI.
+//  The probe sits ~1 cm above the heater disc in the inlet jet, so it reads mostly
+//  hot AIR, not beans (2026-10 roast analysis: 11->150 C in 60 s with 100 g of cold
+//  beans). It was called "BT" until FW 2026.10.08; now "air" everywhere.
+//  ET CS stays -1 (disabled) → ET reads NAN.
 //  VSPI defaults; avoid strapping pins 0/2/12/15 and GPIO13 (PIN_FAN_PWM).
 // ---------------------------------------------------------------------------
 #define PIN_TC_SCK     18   // shared SPI clock (SCK)
 #define PIN_TC_MISO    19   // SPI data-out (SO)
-#define PIN_TC_CS_BT    5   // chip-select, Bean Temp probe
+#define PIN_TC_CS_AIR   5   // chip-select, air-temp probe
 #define PIN_TC_CS_ET   -1   // Environment Temp probe not wired (disabled)
 
 // ---------------------------------------------------------------------------
@@ -35,9 +38,15 @@
 // This is NOT phase control — the SSR passes whole mains cycles, so power is set
 // by the fraction of the window the gate is ON. Shorter window = faster bursts =
 // less visible flicker on a bare lamp and smaller element temperature ripple,
-// at the cost of coarser steps. 250 ms @ CONTROL_LOOP_HZ=10 gives ~2.5 % steps
-// and blinks 4x/s. The bean mass + airflow thermally average the bursts regardless.
-#define HEATER_PWM_PERIOD_MS  250
+// at the cost of coarser steps. The gate is timed every loop pass (~1 ms), so the
+// resolution is set by the mains: 500 ms = 25 full cycles / 50 half-cycles @ 50 Hz
+// => 2 % steps, 2 bursts/s. A whole number of full cycles keeps the positive and
+// negative half-waves balanced (250 ms was 12.5 cycles). The window is the burst
+// LENGTH, not a delay: a new % takes effect on the next 1 ms tick, and the air temp
+// responds over seconds (dead time ~5 s, tau ~27 s), so 2 bursts/s is smooth enough.
+// (Before FW 2026.10.20 the gate was timed at CONTROL_LOOP_HZ=10: 20 % steps with a
+// drifting phase — see roaster_io.cpp.) The bean mass + airflow thermally average the bursts regardless.
+#define HEATER_PWM_PERIOD_MS  500
 
 // ---------------------------------------------------------------------------
 //  Airflow  (air/fluid-bed roaster — beans are tumbled by the blower, no drum)
@@ -69,6 +78,25 @@
 // commands.
 #define HEATER_MIN_FAN_PCT  20
 
+// FAN SPIN-UP LEAD. The interlock above is numeric and instant, but the blower is
+// a brushless motor on an RC ESC: after the pulse width changes it needs ~1-2 s to
+// actually move air, while the zero-cross SSR conducts on the next mains half-cycle.
+// So a fan+heater pair commanded together satisfies the interlock on paper while
+// energising the element into a still-stopped blower — heat with no airflow, the
+// exact failure the interlock exists to prevent (seen on real hardware 2026-09-18:
+// cold start, heater 80 / fan 80, element on before the fan moved).
+// Hold the heater fully OFF until the fan has been AT or ABOVE the threshold for
+// this long. Enforced in roasterIoApply() alongside the interlock, so it holds
+// regardless of control mode, master commands, or how the heat was requested.
+// The master enforces the same lead (FAN_LEAD_S); this is the backstop for when it
+// doesn't — old master, crash mid-command, or anything else publishing set/heater.
+// 5000 not 3000: measured on real hardware 2026-09-18 (operator watched live power
+// draw) the element was drawing for AT LEAST 2 s before the blower moved at all, so
+// 3 s left ~1 s of margin. Costs a few seconds at the start of a roast, and only
+// from a standstill. Keep this >= the master's FAN_LEAD_S so the backstop is never
+// the shorter of the two.
+#define HEATER_FAN_LEAD_MS  5000
+
 #define FAN_ESC_HZ        50     // servo frame rate
 #define FAN_PULSE_MIN_US  1000   // 0 % / OFF (also the arming level) — motor stopped
 #define FAN_RUN_MIN_US    1140   // fan 1 %  = lowest steady speed (just above cogging)
@@ -80,6 +108,19 @@
 // auto-rescale — re-check curves after each bump via the export→review workflow.
 #define FAN_PULSE_MAX_US  1850   // fan 100 % = ESC TRUE max (1850..2000 all identical)
 #define FAN_ARM_MS        3000   // hold min throttle this long at boot to arm
+
+// FAN SOFT START. A brushless motor has to be synchronised by the ESC as it starts:
+// the ESC energises the windings blind, feels where the rotor actually is, and locks
+// on. Demanding a large step straight from a dead stop can defeat that — the rotor
+// cogs instead of syncing, the ESC gives up, and the motor sits still while happily
+// being told 80%. Whether it catches depends partly on where the rotor happened to
+// stop, which is why it is intermittent, and it is worst with a high-inertia load
+// like a blower wheel. So never step the fan up from rest: break away at
+// FAN_START_PCT, then ramp at FAN_SLEW_PCT_PER_S up to whatever was asked for.
+// Downward changes are applied immediately — slowing down never needs a soft start,
+// and airflow must always be free to drop on command.
+#define FAN_START_PCT       25   // first speed commanded when coming off a dead stop
+#define FAN_SLEW_PCT_PER_S  60   // then rise no faster than this (0->100 % in ~1.5 s)
 
 // ---------------------------------------------------------------------------
 //  Local UI / safety indicators (optional)
@@ -98,7 +139,7 @@
 //  (docker/mosquitto/config/acl) scopes the 'roaster' user to that tree.
 //
 //  Firmware PUBLISHES:
-//    <base>/status     JSON telemetry (bt, et, ror, heater, state) ~TELEMETRY_HZ
+//    <base>/status     JSON telemetry (air, et, ror, heater, state) ~TELEMETRY_HZ
 //    <base>/available  retained LWT: "online" / "offline"
 //  Firmware SUBSCRIBES (any client — Artisan or HA — may write these):
 //    <base>/set/heater      heater setpoint %   (MANUAL mode)
@@ -124,7 +165,7 @@
 //  instantly on subscribe — that's the "query the firmware version" mechanism.
 // ---------------------------------------------------------------------------
 #ifndef FW_VERSION                         // overridable via -DFW_VERSION in platformio.ini
-#define FW_VERSION        "2026.08.12"
+#define FW_VERSION        "2026.10.20"   // SSR gate timed every loop pass (was 10 Hz -> 20 % steps, ~50 s lag); 500 ms window
 #endif
 #define FW_BUILD          (__DATE__ " " __TIME__)
 
@@ -133,7 +174,7 @@
 // ---------------------------------------------------------------------------
 #define CONTROL_LOOP_HZ        10     // PID / output update rate
 #define TELEMETRY_HZ           2      // how often temps refresh the registers
-// BT filter sampling: the MAX6675 needs ~170-220 ms/conversion, so sampling faster
+// Air-temp filter sampling: the MAX6675 needs ~170-220 ms/conversion, so sampling faster
 // than this just re-reads the same value. 250 ms = ~4 Hz feeds the trimmed-mean ring
 // (thermocouples.cpp) with real samples while telemetry still publishes at 2 Hz.
 #define TC_SAMPLE_MS           250
@@ -141,8 +182,16 @@
 // MAX6675 jitter (measured raw RoR swung -372..+1600 C/min, 21% sign-flips on a
 // real roast — 2026-07-26). Compute the slope over a sliding time window instead:
 // 30 s collapses that to a clean curve (stdev ~28, ~2% flips) with minimal lag.
-#define ROR_WINDOW_MS          30000  // BT slope measured over this trailing window
-#define SAFETY_MAX_BT_C        230.0f // hard cutoff: cut heater above this BT
+#define ROR_WINDOW_MS          30000  // air-temp slope measured over this trailing window
+// Over-temp heat hold, with hysteresis. At/above SAFETY_MAX_AIR_C the heater is cut
+// but the fan keeps doing what the master commands (no 100 % blast that throws the
+// beans); heat is only allowed back once air drops below SAFETY_AIR_RESUME_C.
+// 2026-10-08: was a 230 C non-latching cutoff with fan 100 %. On this rig FC is
+// at ~217-226 C (30 s mean) and the probe reading swings +12..18 C around its mean,
+// so normal FC/development tripped it 3-6 times a roast, chattering heat on/off and
+// slamming the fan right at first crack. Max raw air over 3 roasts: 235.0 C.
+#define SAFETY_MAX_AIR_C       240.0f // cut heat at/above this air temp
+#define SAFETY_AIR_RESUME_C    230.0f // ...and keep it cut until air is below this
 #define SAFETY_COMMS_TIMEOUT_MS 2000  // no master heartbeat -> fail safe (heater off).
                                       // Tight: master (HA/Node-RED/script) must ping
                                       // ~1 Hz. Path 2 = ESP is a dumb actuator, so a
@@ -150,29 +199,29 @@
 #define HEATER_MAX_PCT         100    // clamp
 
 // --- Independent overheat / fault guards (ESP never trusts the master) -------
-// Dead-probe: BT NaN (unplugged/faulty MAX31855) for this many consecutive
+// Dead-probe: air NaN (unplugged/faulty MAX31855) for this many consecutive
 // control-loop reads -> fail safe. At CONTROL_LOOP_HZ=10, 20 reads = ~2 s.
 #define SAFETY_BADPROBE_MAX     20
-// Thermal-runaway: if the heater is commanded at/above this % but BT fails to
+// Thermal-runaway: if the heater is commanded at/above this % but air fails to
 // rise at least SAFETY_RUNAWAY_MIN_RISE_C within SAFETY_RUNAWAY_WINDOW_MS, the
-// probe likely fell out of the bean mass (reads cool while the element cooks)
+// probe likely left the airflow (reads cool while the element cooks)
 // -> fail safe. Tune once real thermal response is known.
 #define SAFETY_RUNAWAY_HEAT_PCT     60
 // 2026-07-24: 3 C / 30 s was too tight — it tripped FAULT on a normal light-roast
-// approach to target (BT legitimately flattens near the setpoint while heater is
+// approach to target (the reading legitimately flattens near the setpoint while heater is
 // still >=60%), plus the noisy MAX6675 scatters a real slow rise to ~0. Loosened
-// to 2 C / 60 s: still catches a true probe-out-of-mass runaway (heater hard, BT
+// to 2 C / 60 s: still catches a true probe-out-of-mass runaway (heater hard, reading
 // dead-flat for a full minute) but tolerates a normal flattening ramp.
 #define SAFETY_RUNAWAY_WINDOW_MS    60000   // 60 s observation window
 #define SAFETY_RUNAWAY_MIN_RISE_C   2.0f    // expect >=2 C rise in that window
 // 2026-07-26: the guard also false-tripped at the TOP of a good roast (light2 hit
-// 197 C on target at 9 min, then FAULT): near the setpoint BT legitimately flattens
+// 197 C on target at 9 min, then FAULT): near the setpoint the reading legitimately flattens
 // (<2 C/60 s) while the PID holds heater >=60% settling onto target. The runaway it
 // actually protects against is probe-out-of-mass, which reads COOL (~ambient) while
-// the element cooks — that danger only exists at low BT. So ARM the guard only below
-// this BT; above it the probe is demonstrably in hot beans and SAFETY_MAX_BT_C (230)
+// the element cooks — that danger only exists at low readings. So ARM the guard only below
+// this temp; above it the probe is demonstrably in hot air and SAFETY_MAX_AIR_C
 // covers a true overshoot. Set below the lowest realistic target so real roasts finish.
-#define SAFETY_RUNAWAY_MAX_ARM_C    150.0f  // runaway guard only active while BT < this
+#define SAFETY_RUNAWAY_MAX_ARM_C    150.0f  // runaway guard only active while air < this
 
 // ---------------------------------------------------------------------------
 //  Internal state keys (a holdover from the old Modbus register map; now just
@@ -180,13 +229,19 @@
 //  Scaling: all temperatures are   degrees C x 10   (e.g. 2105 => 210.5 C)
 // ---------------------------------------------------------------------------
 // Telemetry (firmware -> world; published in <base>/status)
-#define IREG_BT          0   // bean temp     (C x10)
+#define IREG_AIR         0   // air temp      (C x10)
 #define IREG_ET          1   // env temp      (C x10)
-#define IREG_BT_ROR      2   // bean RoR      (C/min x10)
+#define IREG_AIR_ROR     2   // air RoR       (C/min x10)
 #define IREG_HEATER_ACT  3   // heater actual (%)
 #define IREG_STATE       4   // roaster state enum (see control.h)
 #define IREG_FAN_ACT     5   // fan actual    (%)
-#define IREG_COUNT       6
+#define IREG_AIR_RAW     6   // UNFILTERED air temp (C x10) — debug, see DEBUG_RAW_AIR
+#define IREG_COUNT       7
+
+// DEBUG: publish the raw (pre-filter) air temp as "air_raw" in the status JSON so raw
+// and filtered can be logged side by side (diagnosing the reading's limit cycle). Set to 0 to
+// drop the extra field once the diagnosis is done.
+#define DEBUG_RAW_AIR    1
 
 // Set to 1 only when an ET thermocouple is physically wired. When 0, ET is
 // omitted from the status payload instead of publishing a fake 0 C.

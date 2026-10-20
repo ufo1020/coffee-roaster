@@ -1,9 +1,10 @@
 #pragma once
 
-// Bean Temp (BT) and Environment Temp (ET) in degrees C.
+// Air temp (the single probe, ~1 cm above the heater disc in the inlet jet; was
+// called "BT" before FW 2026.10.08) and Environment Temp (ET), in degrees C.
 // NAN means the probe read failed / is not wired.
 struct Temps {
-  float bt;
+  float air;
   float et;
 };
 
@@ -12,6 +13,8 @@ void  thermocouplesBegin();
 // conversion time); decoupled from thermocouplesRead so the trimmed mean has enough
 // real samples despite the 2 Hz telemetry rate.
 void  thermocouplesSample();
-// Return the current filtered BT (trimmed mean of the ring). NAN if the probe is
+// Return the current filtered air temp (trimmed mean of the ring). NAN if the probe is
 // dead/unwired so the safety debounce still fires.
 Temps thermocouplesRead();
+// Last UNFILTERED chip read (pre-gate, pre-trim). Debug: compare raw vs filtered.
+float thermocouplesRawAir();

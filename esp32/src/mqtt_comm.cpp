@@ -90,14 +90,17 @@ void commBegin() {
 static void publishStatus() {
   if (!mq.connected()) return;
   JsonDocument doc;
-  doc["bt"]     = gInput[IREG_BT]     / 10.0f;
+  doc["air"]     = gInput[IREG_AIR]     / 10.0f;
 #if HAS_ET_PROBE
   doc["et"]     = gInput[IREG_ET]     / 10.0f;   // only when a probe is wired
 #endif
-  doc["ror"]    = gInput[IREG_BT_ROR] / 10.0f;
+  doc["ror"]    = gInput[IREG_AIR_ROR] / 10.0f;
   doc["heater"] = gInput[IREG_HEATER_ACT];
   doc["fan"]    = gInput[IREG_FAN_ACT];
   doc["state"]  = gInput[IREG_STATE];
+#if DEBUG_RAW_AIR
+  doc["air_raw"] = gInput[IREG_AIR_RAW] / 10.0f;   // unfiltered chip read (debug)
+#endif
   char out[192];
   size_t n = serializeJson(doc, out, sizeof(out));
   mq.publish(MQTT_TOPIC_STATUS, (const uint8_t*)out, n, false);

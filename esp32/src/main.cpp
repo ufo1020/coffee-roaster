@@ -1,7 +1,7 @@
 // coffee-roaster ESP32 controller — entry point.
 //
 // Roles:
-//   * read BT/ET thermocouples
+//   * read air/ET thermocouples
 //   * publish them + accept setpoints over MQTT (roaster-ui is the controller)
 //   * run the control loop (MANUAL passthrough or local PID) at CONTROL_LOOP_HZ
 //   * enforce safety locally (over-temp + comms watchdog) -> fail-safe heater OFF
@@ -94,6 +94,18 @@ void setup() {
   commBegin();             // MQTT: control setpoints + telemetry publish
   controlBegin();
 
+  // Re-stamp the comms watchdog LAST. safetyBegin() started it before
+  // connectWifi(), which blocks until the AP answers — routinely longer than
+  // SAFETY_COMMS_TIMEOUT_MS. So by the time loop() ran its first control tick the
+  // watchdog had already expired, with no master heartbeat yet possible, and the
+  // very first thing the firmware did on every boot was declare FAULT and go to
+  // controlFailSafe() — heater 0 (harmless, nothing was on) and FAN 100 %. That is
+  // the "fan spins up then straight back down a few seconds after power-on": the
+  // blast, then the master's first heartbeat clearing the fault a beat later.
+  // Costs nothing to fix and removes a hard 0->100 % slam of the blower from every
+  // single startup.
+  safetyNoteHeartbeat();
+
   Serial.println("ready");
 }
 
@@ -112,7 +124,7 @@ void loop() {
 
   const uint32_t now = micros();
 
-  // BT sampling: feed the trimmed-mean ring at ~4 Hz (>= the MAX6675 conversion
+  // Air-temp sampling: feed the trimmed-mean ring at ~4 Hz (>= the MAX6675 conversion
   // time). Decoupled from telemetry so the filter has enough real samples to trim.
   if (now - lastSampleUs >= TC_SAMPLE_MS * 1000UL) {
     lastSampleUs = now;
@@ -130,11 +142,17 @@ void loop() {
   if (now - lastControlUs >= 1000000UL / CONTROL_LOOP_HZ) {
     lastControlUs = now;
     ControlOutputs out = controlStep();   // decides heater/fan
-    if (!safetyOk(controlCurrentTemps(), out.heaterPct)) {
-      out = controlFailSafe();            // heater 0%, keep fan for cool-down
+    switch (safetyCheck(controlCurrentTemps(), out.heaterPct)) {
+      case SAFETY_OK:        break;
+      case SAFETY_HEAT_HOLD: out = controlHeatHold(out); break;   // heater 0, fan as commanded
+      case SAFETY_FAILSAFE:  out = controlFailSafe();    break;   // heater 0, fan 100 %
     }
     roasterIoApply(out);
   }
+
+  // SSR slow-PWM gate timing: every pass (~1 kHz with the delay(1) below), so the
+  // burst duty tracks the commanded % with 1 ms resolution, not 10 Hz slots.
+  roasterIoHeaterTick();
 
   // Yield 1 ms so the WiFi/lwIP service task gets CPU. Without this the loop
   // spins flat-out and starves networking, which shows up as multi-second,
