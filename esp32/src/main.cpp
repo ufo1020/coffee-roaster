@@ -150,6 +150,10 @@ void loop() {
     roasterIoApply(out);
   }
 
+  // SSR slow-PWM gate timing: every pass (~1 kHz with the delay(1) below), so the
+  // burst duty tracks the commanded % with 1 ms resolution, not 10 Hz slots.
+  roasterIoHeaterTick();
+
   // Yield 1 ms so the WiFi/lwIP service task gets CPU. Without this the loop
   // spins flat-out and starves networking, which shows up as multi-second,
   // bursty TCP/ICMP latency and heavy loss even on a strong link. Our control

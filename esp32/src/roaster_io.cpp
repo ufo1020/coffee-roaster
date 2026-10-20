@@ -9,8 +9,12 @@
 // of the window and OFF the rest. The SSR turns each edge into whole mains
 // cycles. No zero-cross detector or phase control needed.
 //
-// The window phase is tracked with millis() so it's independent of how often
-// roasterIoApply() is called (it's called at CONTROL_LOOP_HZ).
+// The gate is driven by roasterIoHeaterTick(), called on EVERY loop() pass (~1 kHz),
+// not by roasterIoApply() (CONTROL_LOOP_HZ). Until FW 2026.10.20 the gate was only
+// rewritten at 10 Hz against a 250 ms window, so it could only be on for 0/1/2/3/4/5
+// of five 100 ms slots: real power came in 20 % steps (60/80/100 %) chosen by a
+// slowly drifting phase offset. 75 % and 85 % could both deliver 80 % until the
+// offset drifted ~30 s later, which the operator saw as "power changes 30 s late".
 
 // --- Fan ESC (servo signal) ---------------------------------------------------
 // The blower is a brushless motor on an RC ESC (see config.h). We drive its "S"
@@ -71,6 +75,17 @@ void roasterIoBegin() {
 // calls and can never be reset by anything upstream.
 static uint32_t gFanUpSinceMs = 0;
 
+// Heater % that passed the interlock and spin-up lead; the gate follows it.
+static volatile uint8_t gHeatApplied = 0;
+
+void roasterIoHeaterTick() {
+  if (PIN_HEATER_SSR < 0) return;
+  const uint8_t heat = gHeatApplied;
+  const uint32_t phase = millis() % HEATER_PWM_PERIOD_MS;
+  const bool on = phase < (uint32_t)heat * HEATER_PWM_PERIOD_MS / 100;
+  digitalWrite(PIN_HEATER_SSR, (heat > 0 && on) ? HIGH : LOW);
+}
+
 void roasterIoApply(const ControlOutputs& o) {
   uint8_t heat = o.heaterPct > 100 ? 100 : o.heaterPct;
   uint8_t fan  = o.fanPct    > 100 ? 100 : o.fanPct;
@@ -123,12 +138,11 @@ void roasterIoApply(const ControlOutputs& o) {
     }
   }
 
-  // --- heater ---  slow-PWM burst control (SSR is internally zero-cross).
-  if (PIN_HEATER_SSR >= 0) {
-    uint32_t phase = millis() % HEATER_PWM_PERIOD_MS;
-    bool on = phase < (uint32_t)heat * HEATER_PWM_PERIOD_MS / 100;
-    digitalWrite(PIN_HEATER_SSR, (heat > 0 && on) ? HIGH : LOW);
-  }
+  // --- heater ---  slow-PWM burst control (SSR is internally zero-cross). Store
+  // the level; roasterIoHeaterTick() times the gate. Tick once now so a cut (0)
+  // reaches the pin immediately, not on the next loop pass.
+  gHeatApplied = heat;
+  roasterIoHeaterTick();
 
   // --- fan ---  RC ESC servo pulse: map 0..100 % -> min..max pulse width.
   if (PIN_FAN_PWM >= 0)

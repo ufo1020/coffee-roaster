@@ -8,4 +8,5 @@ struct ControlOutputs {
 };
 
 void roasterIoBegin();                       // set all outputs to a SAFE state
-void roasterIoApply(const ControlOutputs& o);
+void roasterIoApply(const ControlOutputs& o);  // at CONTROL_LOOP_HZ: decide levels
+void roasterIoHeaterTick();                    // every loop() pass: time the SSR gate
