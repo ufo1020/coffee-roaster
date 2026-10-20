@@ -39,10 +39,14 @@
 // by the fraction of the window the gate is ON. Shorter window = faster bursts =
 // less visible flicker on a bare lamp and smaller element temperature ripple,
 // at the cost of coarser steps. The gate is timed every loop pass (~1 ms), so the
-// resolution is set by the mains: 250 ms = 25 half-cycles @ 50 Hz => ~4 % steps,
-// blinking 4x/s. (Before FW 2026.10.20 it was timed at CONTROL_LOOP_HZ=10, which
-// gave 20 % steps with a drifting phase — see roaster_io.cpp.) The bean mass + airflow thermally average the bursts regardless.
-#define HEATER_PWM_PERIOD_MS  250
+// resolution is set by the mains: 500 ms = 25 full cycles / 50 half-cycles @ 50 Hz
+// => 2 % steps, 2 bursts/s. A whole number of full cycles keeps the positive and
+// negative half-waves balanced (250 ms was 12.5 cycles). The window is the burst
+// LENGTH, not a delay: a new % takes effect on the next 1 ms tick, and the air temp
+// responds over seconds (dead time ~5 s, tau ~27 s), so 2 bursts/s is smooth enough.
+// (Before FW 2026.10.20 the gate was timed at CONTROL_LOOP_HZ=10: 20 % steps with a
+// drifting phase — see roaster_io.cpp.) The bean mass + airflow thermally average the bursts regardless.
+#define HEATER_PWM_PERIOD_MS  500
 
 // ---------------------------------------------------------------------------
 //  Airflow  (air/fluid-bed roaster — beans are tumbled by the blower, no drum)
@@ -161,7 +165,7 @@
 //  instantly on subscribe — that's the "query the firmware version" mechanism.
 // ---------------------------------------------------------------------------
 #ifndef FW_VERSION                         // overridable via -DFW_VERSION in platformio.ini
-#define FW_VERSION        "2026.10.20"   // SSR gate timed every loop pass (was 10 Hz -> 20 % power steps, ~30 s lag)
+#define FW_VERSION        "2026.10.20"   // SSR gate timed every loop pass (was 10 Hz -> 20 % steps, ~50 s lag); 500 ms window
 #endif
 #define FW_BUILD          (__DATE__ " " __TIME__)
 
